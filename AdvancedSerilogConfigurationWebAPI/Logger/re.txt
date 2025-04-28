@@ -1,47 +1,57 @@
-Advanced Serilog Configuration in .NET 8 Web API
-Here's a comprehensive implementation of Serilog in a .NET 8 Web API that includes:
-
-Custom log event enrichment
-
-Performance logging
-
-Detailed context information (class, method, line numbers)
-
-Exception handling
-
-Structured configuration
-
-1. Implementation Steps
-First, install the required NuGet packages:
-dotnet add package Serilog
-dotnet add package Serilog.AspNetCore
-dotnet add package Serilog.Enrichers.Environment
-dotnet add package Serilog.Enrichers.Thread
-dotnet add package Serilog.Sinks.Console
-dotnet add package Serilog.Sinks.File
-2. Create a custom log enricher (ILogEventEnricher implementation)
+﻿Project Structure
+SerilogAdvancedExample/
+├── Controllers/
+│   ├── WeatherForecastController.cs
+├── Extensions/
+│   ├── LoggingConfiguration.cs
+│   ├── PerformanceLoggingExtensions.cs
+├── Enrichers/
+│   ├── CustomLogEnricher.cs
+├── Program.cs
+├── appsettings.json
+├── appsettings.Development.json
+└── WeatherForecast.cs
+Complete Files
+1. Program.cs
 csharp
-using Serilog.Core;
-using Serilog.Events;
+using Serilog;
+using Serilog.Formatting.Json;
+using SerilogAdvancedExample.Enrichers;
+using SerilogAdvancedExample.Extensions;
 
-public class CustomLogEnricher : ILogEventEnricher
+var builder = WebApplication.CreateBuilder(args);
+
+// Configure Serilog
+builder.Host.ConfigureSerilog();
+
+// Add services to the container.
+builder.Services.AddControllers();
+
+var app = builder.Build();
+
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+
+// Add request logging
+app.UseSerilogRequestLogging(options =>
 {
-    public void Enrich(LogEvent logEvent, ILogEventPropertyFactory propertyFactory)
+    options.EnrichDiagnosticContext = (diagnosticContext, httpContext) =>
     {
-        // Add custom properties to all log events
-        var assemblyName = typeof(Program).Assembly.GetName().Name;
-        var assemblyVersion = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown";
-        
-        logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty("Application", assemblyName));
-        logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty("Version", assemblyVersion));
-        logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty("Environment", Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Development"));
-    }
-}
-3. Create a static logging configuration class
+        diagnosticContext.Set("RequestHost", httpContext.Request.Host.Value);
+        diagnosticContext.Set("RequestScheme", httpContext.Request.Scheme);
+        diagnosticContext.Set("RemoteIp", httpContext.Connection.RemoteIpAddress);
+    };
+});
+
+app.Run();
+2. Extensions/LoggingConfiguration.cs
 csharp
 using Serilog;
 using Serilog.Exceptions;
-using Serilog.Formatting.Json;
+using SerilogAdvancedExample.Enrichers;
+
+namespace SerilogAdvancedExample.Extensions;
 
 public static class LoggingConfiguration
 {
@@ -74,186 +84,12 @@ public static class LoggingConfiguration
         });
     }
 }
-4. Create performance logging extension
-csharp
-using System.Diagnostics;
-using Serilog;
-
-public static class PerformanceLoggingExtensions
-{
-    public static ILogger WithClassAndMethodNames<T>(this ILogger logger, [System.Runtime.CompilerServices.CallerMemberName] string memberName = "")
-    {
-        return logger
-            .ForContext("ClassName", typeof(T).Name)
-            .ForContext("MethodName", memberName);
-    }
-
-    public static IDisposable TimeOperation<T>(this ILogger logger, [System.Runtime.CompilerServices.CallerMemberName] string memberName = "", [System.Runtime.CompilerServices.CallerLineNumber] int lineNumber = 0)
-    {
-        var className = typeof(T).Name;
-        return new TimingTracker(logger, className, memberName, lineNumber);
-    }
-
-    private class TimingTracker : IDisposable
-    {
-        private readonly ILogger _logger;
-        private readonly string _className;
-        private readonly string _methodName;
-        private readonly int _lineNumber;
-        private readonly Stopwatch _stopwatch;
-
-        public TimingTracker(ILogger logger, string className, string methodName, int lineNumber)
-        {
-            _logger = logger;
-            _className = className;
-            _methodName = methodName;
-            _lineNumber = lineNumber;
-            _stopwatch = Stopwatch.StartNew();
-            
-            _logger.Debug("Starting {ClassName}.{MethodName} at line {LineNumber}", 
-                _className, _methodName, _lineNumber);
-        }
-
-        public void Dispose()
-        {
-            _stopwatch.Stop();
-            
-            _logger.Information("Completed {ClassName}.{MethodName} at line {LineNumber} in {ElapsedMilliseconds}ms", 
-                _className, 
-                _methodName, 
-                _lineNumber, 
-                _stopwatch.ElapsedMilliseconds);
-        }
-    }
-}
-5. Configure Program.cs
-csharp
-using Serilog;
-
-var builder = WebApplication.CreateBuilder(args);
-
-// Configure Serilog
-builder.Host.ConfigureSerilog();
-
-// Add services to the container.
-builder.Services.AddControllers();
-
-var app = builder.Build();
-
-app.UseHttpsRedirection();
-app.UseAuthorization();
-app.MapControllers();
-
-// Add request logging
-app.UseSerilogRequestLogging(options =>
-{
-    options.EnrichDiagnosticContext = (diagnosticContext, httpContext) =>
-    {
-        diagnosticContext.Set("RequestHost", httpContext.Request.Host.Value);
-        diagnosticContext.Set("RequestScheme", httpContext.Request.Scheme);
-        diagnosticContext.Set("RemoteIp", httpContext.Connection.RemoteIpAddress);
-    };
-});
-
-app.Run();
-6. Example Usage in a Controller
-csharp
-using Microsoft.AspNetCore.Mvc;
-
-[ApiController]
-[Route("[controller]")]
-public class SampleController : ControllerBase
-{
-    private readonly ILogger<SampleController> _logger;
-
-    public SampleController(ILogger<SampleController> logger)
-    {
-        _logger = logger;
-    }
-
-    [HttpGet]
-    public IActionResult Get()
-    {
-        // Example of using the performance tracker
-        using (_logger.TimeOperation<SampleController>())
-        {
-            try
-            {
-                // Example of logging with class/method context
-                _logger.WithClassAndMethodNames<SampleController>()
-                    .Information("Processing request in {ClassName}.{MethodName}");
-                
-                // Simulate work
-                Thread.Sleep(100);
-                
-                return Ok(new { Message = "Success" });
-            }
-            catch (Exception ex)
-            {
-                _logger.WithClassAndMethodNames<SampleController>()
-                    .Error(ex, "Error in {ClassName}.{MethodName} at line {LineNumber}");
-                
-                return StatusCode(500);
-            }
-        }
-    }
-}
-7. Optional appsettings.json Configuration
-json
-{
-  "Serilog": {
-    "MinimumLevel": {
-      "Default": "Information",
-      "Override": {
-        "Microsoft": "Warning",
-        "Microsoft.Hosting.Lifetime": "Information",
-        "System": "Warning"
-      }
-    },
-    "WriteTo": [
-      {
-        "Name": "Console"
-      },
-      {
-        "Name": "File",
-        "Args": {
-          "path": "logs/log-.txt",
-          "rollingInterval": "Day",
-          "retainedFileCountLimit": 7,
-          "outputTemplate": "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}"
-        }
-      }
-    ],
-    "Enrich": ["FromLogContext", "WithMachineName", "WithProcessId", "WithThreadId"]
-  }
-}
-Key Features
-Custom Enrichment: Adds application name, version, and environment to all logs
-
-Performance Tracking: Measures and logs method execution time
-
-Context Information: Automatically captures class name, method name, and line numbers
-
-Exception Handling: Detailed exception logging with stack traces
-
-Structured Logging: JSON format for file logs, easy to parse and analyze
-
-Request Logging: HTTP request details automatically logged
-
-Flexible Configuration: Can be configured via code or appsettings.json
-
-This setup provides comprehensive logging that's valuable for both development and production environments, with detailed context for troubleshooting and performance monitoring.
-
-
-
-***************************************************************************************************
-1. Update the PerformanceLoggingExtensions class
-Make sure the extension method is properly defined for ILogger<T>:
-
+3. Extensions/PerformanceLoggingExtensions.cs
 csharp
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
-using Serilog;
+
+namespace SerilogAdvancedExample.Extensions;
 
 public static class PerformanceLoggingExtensions
 {
@@ -281,7 +117,7 @@ public static class PerformanceLoggingExtensions
             _lineNumber = lineNumber;
             _stopwatch = Stopwatch.StartNew();
             
-            _logger.Debug("Starting {ClassName}.{MethodName} at line {LineNumber}", 
+            _logger.LogDebug("Starting {ClassName}.{MethodName} at line {LineNumber}", 
                 _className, _methodName, _lineNumber);
         }
 
@@ -289,7 +125,7 @@ public static class PerformanceLoggingExtensions
         {
             _stopwatch.Stop();
             
-            _logger.Information("Completed {ClassName}.{MethodName} at line {LineNumber} in {ElapsedMilliseconds}ms", 
+            _logger.LogInformation("Completed {ClassName}.{MethodName} at line {LineNumber} in {ElapsedMilliseconds}ms", 
                 _className, 
                 _methodName, 
                 _lineNumber, 
@@ -297,17 +133,42 @@ public static class PerformanceLoggingExtensions
         }
     }
 }
-2. Update your Controller Usage
-Here's how to properly use it in your WeatherForecastController:
+4. Enrichers/CustomLogEnricher.cs
+csharp
+using Serilog.Core;
+using Serilog.Events;
 
+namespace SerilogAdvancedExample.Enrichers;
+
+public class CustomLogEnricher : ILogEventEnricher
+{
+    public void Enrich(LogEvent logEvent, ILogEventPropertyFactory propertyFactory)
+    {
+        var assemblyName = typeof(Program).Assembly.GetName().Name;
+        var assemblyVersion = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown";
+        
+        logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty("Application", assemblyName));
+        logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty("Version", assemblyVersion));
+        logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty("Environment", 
+            Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Development"));
+    }
+}
+5. Controllers/WeatherForecastController.cs
 csharp
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
+using SerilogAdvancedExample.Extensions;
+
+namespace SerilogAdvancedExample.Controllers;
 
 [ApiController]
 [Route("[controller]")]
 public class WeatherForecastController : ControllerBase
 {
+    private static readonly string[] Summaries = new[]
+    {
+        "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
+    };
+
     private readonly ILogger<WeatherForecastController> _logger;
 
     public WeatherForecastController(ILogger<WeatherForecastController> logger)
@@ -322,7 +183,8 @@ public class WeatherForecastController : ControllerBase
         {
             try
             {
-                // Your controller logic here
+                _logger.LogInformation("Generating weather forecast");
+                
                 var forecast = Enumerable.Range(1, 5).Select(index =>
                     new WeatherForecast
                     {
@@ -332,14 +194,101 @@ public class WeatherForecastController : ControllerBase
                     })
                     .ToArray();
 
-                _logger.LogInformation("Successfully generated weather forecast");
                 return forecast;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error generating weather forecast");
-                throw; // or return appropriate error response
+                throw;
             }
         }
     }
 }
+6. WeatherForecast.cs
+csharp
+namespace SerilogAdvancedExample;
+
+public class WeatherForecast
+{
+    public DateTime Date { get; set; }
+    public int TemperatureC { get; set; }
+    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
+    public string? Summary { get; set; }
+}
+7. appsettings.json
+json
+{
+  "Serilog": {
+    "MinimumLevel": {
+      "Default": "Information",
+      "Override": {
+        "Microsoft": "Warning",
+        "Microsoft.Hosting.Lifetime": "Information",
+        "System": "Warning"
+      }
+    },
+    "WriteTo": [
+      {
+        "Name": "Console"
+      },
+      {
+        "Name": "File",
+        "Args": {
+          "path": "logs/log-.json",
+          "rollingInterval": "Day",
+          "retainedFileCountLimit": 7,
+          "formatter": "Serilog.Formatting.Json.JsonFormatter, Serilog"
+        }
+      }
+    ],
+    "Enrich": ["FromLogContext", "WithMachineName", "WithProcessId", "WithThreadId"]
+  },
+  "AllowedHosts": "*"
+}
+8. appsettings.Development.json
+json
+{
+  "Serilog": {
+    "MinimumLevel": {
+      "Default": "Debug",
+      "Override": {
+        "Microsoft": "Warning",
+        "Microsoft.Hosting.Lifetime": "Information",
+        "System": "Warning"
+      }
+    }
+  }
+}
+How to Create the Project
+Create a new .NET 8 Web API project:
+
+bash
+dotnet new webapi -n SerilogAdvancedExample
+cd SerilogAdvancedExample
+Add required NuGet packages:
+
+bash
+dotnet add package Serilog
+dotnet add package Serilog.AspNetCore
+dotnet add package Serilog.Enrichers.Environment
+dotnet add package Serilog.Enrichers.Thread
+dotnet add package Serilog.Exceptions
+dotnet add package Serilog.Sinks.Console
+dotnet add package Serilog.Sinks.File
+Create the folder structure and add all the files listed above.
+
+Run the project:
+
+bash
+dotnet run
+This complete implementation will give you advanced Serilog logging with:
+
+Performance tracking
+
+Detailed context information
+
+Exception handling
+
+Structured logging (JSON format)
+
+Environment-specific configurations
