@@ -243,3 +243,103 @@ Request Logging: HTTP request details automatically logged
 Flexible Configuration: Can be configured via code or appsettings.json
 
 This setup provides comprehensive logging that's valuable for both development and production environments, with detailed context for troubleshooting and performance monitoring.
+
+
+
+***************************************************************************************************
+1. Update the PerformanceLoggingExtensions class
+Make sure the extension method is properly defined for ILogger<T>:
+
+csharp
+using System.Diagnostics;
+using Microsoft.Extensions.Logging;
+using Serilog;
+
+public static class PerformanceLoggingExtensions
+{
+    public static IDisposable TimeOperation<T>(this ILogger<T> logger, 
+        [System.Runtime.CompilerServices.CallerMemberName] string memberName = "",
+        [System.Runtime.CompilerServices.CallerLineNumber] int lineNumber = 0)
+    {
+        var className = typeof(T).Name;
+        return new TimingTracker(logger, className, memberName, lineNumber);
+    }
+
+    private class TimingTracker : IDisposable
+    {
+        private readonly ILogger _logger;
+        private readonly string _className;
+        private readonly string _methodName;
+        private readonly int _lineNumber;
+        private readonly Stopwatch _stopwatch;
+
+        public TimingTracker(ILogger logger, string className, string methodName, int lineNumber)
+        {
+            _logger = logger;
+            _className = className;
+            _methodName = methodName;
+            _lineNumber = lineNumber;
+            _stopwatch = Stopwatch.StartNew();
+            
+            _logger.Debug("Starting {ClassName}.{MethodName} at line {LineNumber}", 
+                _className, _methodName, _lineNumber);
+        }
+
+        public void Dispose()
+        {
+            _stopwatch.Stop();
+            
+            _logger.Information("Completed {ClassName}.{MethodName} at line {LineNumber} in {ElapsedMilliseconds}ms", 
+                _className, 
+                _methodName, 
+                _lineNumber, 
+                _stopwatch.ElapsedMilliseconds);
+        }
+    }
+}
+2. Update your Controller Usage
+Here's how to properly use it in your WeatherForecastController:
+
+csharp
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
+
+[ApiController]
+[Route("[controller]")]
+public class WeatherForecastController : ControllerBase
+{
+    private readonly ILogger<WeatherForecastController> _logger;
+
+    public WeatherForecastController(ILogger<WeatherForecastController> logger)
+    {
+        _logger = logger;
+    }
+
+    [HttpGet(Name = "GetWeatherForecast")]
+    public IEnumerable<WeatherForecast> Get()
+    {
+        using (_logger.TimeOperation<WeatherForecastController>())
+        {
+            try
+            {
+                // Your controller logic here
+                var forecast = Enumerable.Range(1, 5).Select(index =>
+                    new WeatherForecast
+                    {
+                        Date = DateTime.Now.AddDays(index),
+                        TemperatureC = Random.Shared.Next(-20, 55),
+                        Summary = Summaries[Random.Shared.Next(Summaries.Length)]
+                    })
+                    .ToArray();
+
+                _logger.LogInformation("Successfully generated weather forecast");
+                return forecast;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error generating weather forecast");
+                throw; // or return appropriate error response
+            }
+        }
+    }
+}
