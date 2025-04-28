@@ -1,0 +1,245 @@
+Advanced Serilog Configuration in .NET 8 Web API
+Here's a comprehensive implementation of Serilog in a .NET 8 Web API that includes:
+
+Custom log event enrichment
+
+Performance logging
+
+Detailed context information (class, method, line numbers)
+
+Exception handling
+
+Structured configuration
+
+1. Implementation Steps
+First, install the required NuGet packages:
+dotnet add package Serilog
+dotnet add package Serilog.AspNetCore
+dotnet add package Serilog.Enrichers.Environment
+dotnet add package Serilog.Enrichers.Thread
+dotnet add package Serilog.Sinks.Console
+dotnet add package Serilog.Sinks.File
+2. Create a custom log enricher (ILogEventEnricher implementation)
+csharp
+using Serilog.Core;
+using Serilog.Events;
+
+public class CustomLogEnricher : ILogEventEnricher
+{
+    public void Enrich(LogEvent logEvent, ILogEventPropertyFactory propertyFactory)
+    {
+        // Add custom properties to all log events
+        var assemblyName = typeof(Program).Assembly.GetName().Name;
+        var assemblyVersion = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown";
+        
+        logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty("Application", assemblyName));
+        logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty("Version", assemblyVersion));
+        logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty("Environment", Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Development"));
+    }
+}
+3. Create a static logging configuration class
+csharp
+using Serilog;
+using Serilog.Exceptions;
+using Serilog.Formatting.Json;
+
+public static class LoggingConfiguration
+{
+    public static IHostBuilder ConfigureSerilog(this IHostBuilder hostBuilder)
+    {
+        return hostBuilder.UseSerilog((context, services, configuration) =>
+        {
+            var env = context.HostingEnvironment;
+            
+            configuration
+                .ReadFrom.Configuration(context.Configuration)
+                .ReadFrom.Services(services)
+                .Enrich.FromLogContext()
+                .Enrich.WithExceptionDetails()
+                .Enrich.WithMachineName()
+                .Enrich.WithProcessId()
+                .Enrich.WithThreadId()
+                .Enrich.With(new CustomLogEnricher())
+                .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj} {NewLine}{Exception}")
+                .WriteTo.File(
+                    new JsonFormatter(),
+                    Path.Combine("logs", $"{env.ApplicationName}-.json"),
+                    rollingInterval: RollingInterval.Day,
+                    retainedFileCountLimit: 7);
+            
+            if (env.IsDevelopment())
+            {
+                configuration.WriteTo.Debug();
+            }
+        });
+    }
+}
+4. Create performance logging extension
+csharp
+using System.Diagnostics;
+using Serilog;
+
+public static class PerformanceLoggingExtensions
+{
+    public static ILogger WithClassAndMethodNames<T>(this ILogger logger, [System.Runtime.CompilerServices.CallerMemberName] string memberName = "")
+    {
+        return logger
+            .ForContext("ClassName", typeof(T).Name)
+            .ForContext("MethodName", memberName);
+    }
+
+    public static IDisposable TimeOperation<T>(this ILogger logger, [System.Runtime.CompilerServices.CallerMemberName] string memberName = "", [System.Runtime.CompilerServices.CallerLineNumber] int lineNumber = 0)
+    {
+        var className = typeof(T).Name;
+        return new TimingTracker(logger, className, memberName, lineNumber);
+    }
+
+    private class TimingTracker : IDisposable
+    {
+        private readonly ILogger _logger;
+        private readonly string _className;
+        private readonly string _methodName;
+        private readonly int _lineNumber;
+        private readonly Stopwatch _stopwatch;
+
+        public TimingTracker(ILogger logger, string className, string methodName, int lineNumber)
+        {
+            _logger = logger;
+            _className = className;
+            _methodName = methodName;
+            _lineNumber = lineNumber;
+            _stopwatch = Stopwatch.StartNew();
+            
+            _logger.Debug("Starting {ClassName}.{MethodName} at line {LineNumber}", 
+                _className, _methodName, _lineNumber);
+        }
+
+        public void Dispose()
+        {
+            _stopwatch.Stop();
+            
+            _logger.Information("Completed {ClassName}.{MethodName} at line {LineNumber} in {ElapsedMilliseconds}ms", 
+                _className, 
+                _methodName, 
+                _lineNumber, 
+                _stopwatch.ElapsedMilliseconds);
+        }
+    }
+}
+5. Configure Program.cs
+csharp
+using Serilog;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Configure Serilog
+builder.Host.ConfigureSerilog();
+
+// Add services to the container.
+builder.Services.AddControllers();
+
+var app = builder.Build();
+
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+
+// Add request logging
+app.UseSerilogRequestLogging(options =>
+{
+    options.EnrichDiagnosticContext = (diagnosticContext, httpContext) =>
+    {
+        diagnosticContext.Set("RequestHost", httpContext.Request.Host.Value);
+        diagnosticContext.Set("RequestScheme", httpContext.Request.Scheme);
+        diagnosticContext.Set("RemoteIp", httpContext.Connection.RemoteIpAddress);
+    };
+});
+
+app.Run();
+6. Example Usage in a Controller
+csharp
+using Microsoft.AspNetCore.Mvc;
+
+[ApiController]
+[Route("[controller]")]
+public class SampleController : ControllerBase
+{
+    private readonly ILogger<SampleController> _logger;
+
+    public SampleController(ILogger<SampleController> logger)
+    {
+        _logger = logger;
+    }
+
+    [HttpGet]
+    public IActionResult Get()
+    {
+        // Example of using the performance tracker
+        using (_logger.TimeOperation<SampleController>())
+        {
+            try
+            {
+                // Example of logging with class/method context
+                _logger.WithClassAndMethodNames<SampleController>()
+                    .Information("Processing request in {ClassName}.{MethodName}");
+                
+                // Simulate work
+                Thread.Sleep(100);
+                
+                return Ok(new { Message = "Success" });
+            }
+            catch (Exception ex)
+            {
+                _logger.WithClassAndMethodNames<SampleController>()
+                    .Error(ex, "Error in {ClassName}.{MethodName} at line {LineNumber}");
+                
+                return StatusCode(500);
+            }
+        }
+    }
+}
+7. Optional appsettings.json Configuration
+json
+{
+  "Serilog": {
+    "MinimumLevel": {
+      "Default": "Information",
+      "Override": {
+        "Microsoft": "Warning",
+        "Microsoft.Hosting.Lifetime": "Information",
+        "System": "Warning"
+      }
+    },
+    "WriteTo": [
+      {
+        "Name": "Console"
+      },
+      {
+        "Name": "File",
+        "Args": {
+          "path": "logs/log-.txt",
+          "rollingInterval": "Day",
+          "retainedFileCountLimit": 7,
+          "outputTemplate": "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}"
+        }
+      }
+    ],
+    "Enrich": ["FromLogContext", "WithMachineName", "WithProcessId", "WithThreadId"]
+  }
+}
+Key Features
+Custom Enrichment: Adds application name, version, and environment to all logs
+
+Performance Tracking: Measures and logs method execution time
+
+Context Information: Automatically captures class name, method name, and line numbers
+
+Exception Handling: Detailed exception logging with stack traces
+
+Structured Logging: JSON format for file logs, easy to parse and analyze
+
+Request Logging: HTTP request details automatically logged
+
+Flexible Configuration: Can be configured via code or appsettings.json
+
+This setup provides comprehensive logging that's valuable for both development and production environments, with detailed context for troubleshooting and performance monitoring.
