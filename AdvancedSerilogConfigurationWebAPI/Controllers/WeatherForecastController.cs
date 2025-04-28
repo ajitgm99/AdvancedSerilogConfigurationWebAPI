@@ -8,7 +8,7 @@ namespace AdvancedSerilogConfigurationWebAPI.Controllers
     [Route("[controller]")]
     public class WeatherForecastController : ControllerBase
     {
-        private readonly Serilog.ILogger<WeatherForecastController> _logger;
+        private readonly Serilog.ILogger _logger;
 
         private static readonly string[] Summaries = new[]
         {
@@ -16,7 +16,7 @@ namespace AdvancedSerilogConfigurationWebAPI.Controllers
         };
 
 
-        public WeatherForecastController(ILogger<WeatherForecastController> logger)
+        public WeatherForecastController(Serilog.ILogger logger)
         {
             _logger = logger;
         }
@@ -25,6 +25,8 @@ namespace AdvancedSerilogConfigurationWebAPI.Controllers
         public IEnumerable<WeatherForecast> Get()
         {
             using var performanceTracker = _logger.TrackPerformance();
+
+            _logger.Information( "Failed to get weather forecast");
 
             return Enumerable.Range(1, 5).Select(index => new WeatherForecast
                 {
